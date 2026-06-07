@@ -182,16 +182,22 @@ def build_model_from_config(config: Dict[str, Any], for_training: bool = False, 
         if for_training and 'training' in config:
             training_config = config['training']
             loss_option = training_config.get('loss_option', 2)
+            loss_scales['label_smoothing'] = training_config.get('label_smoothing', 0.0)
+            loss_scales['elim_grid_sense'] = training_config.get('elim_grid_sense', False)
             
             # Extract loss scale parameters from config
             loss_config = training_config.get('loss', {})
             if loss_config:
                 loss_scales = {
+                    'label_smoothing': training_config.get('label_smoothing', 0.0),
+                    'elim_grid_sense': training_config.get('elim_grid_sense', False),
                     'coord_scale': loss_config.get('coord_scale', 1.0),
                     'object_scale': loss_config.get('object_scale', 1.0),
                     'no_object_scale': loss_config.get('no_object_scale', 1.0),
                     'class_scale': loss_config.get('class_scale', 1.0),
                     'anchor_scale': loss_config.get('anchor_scale', 1.0),
+                    'use_softmax_loss': loss_config.get('use_softmax_loss', True),
+                    'use_focal_loss': loss_config.get('use_focal_loss', False),
                     'use_iou_aware_objectness': loss_config.get('use_iou_aware_objectness', False),
                     'iou_objectness_power': loss_config.get('iou_objectness_power', 1.0),
                     'iou_objectness_ratio': loss_config.get('iou_objectness_ratio', 1.0),

@@ -7,6 +7,17 @@ import random
 import math
 import cv2
 from PIL import Image, ImageEnhance, ImageFilter
+
+# imgaug still references np.sctypes, which NumPy removed in 2.0.
+if not hasattr(np, "sctypes"):
+    np.sctypes = {
+        "float": [np.float16, np.float32, np.float64],
+        "int": [np.int8, np.int16, np.int32, np.int64],
+        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
+        "complex": [np.complex64, np.complex128],
+        "others": [np.bool_, np.object_, np.bytes_, np.str_],
+    }
+
 import imgaug.augmenters as iaa
 import imgaug as ia
 

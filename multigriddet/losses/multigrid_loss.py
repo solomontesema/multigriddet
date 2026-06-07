@@ -41,8 +41,8 @@ class MultiGridLoss:
                  ignore_thresh: float = 0.5,
                  label_smoothing: float = 0.0,
                  elim_grid_sense: bool = False,
-                 use_focal_loss: bool = False,  # Default to BCE for classification
-                 use_softmax_loss: bool = False,
+                 use_focal_loss: bool = False,
+                 use_softmax_loss: bool = True,
                  use_iol: bool = True,  # Keep for compatibility
                  use_giou_loss: bool = False,
                  use_diou_loss: bool = False,
@@ -81,8 +81,9 @@ class MultiGridLoss:
             ignore_thresh: IoU threshold for ignoring objectness loss (future use)
             label_smoothing: Label smoothing factor for classification
             elim_grid_sense: Whether to eliminate grid sensitivity (not implemented)
-            use_focal_loss: Whether to use focal loss for classification (default: False, use BCE)
-            use_softmax_loss: Whether to use softmax loss for classification
+            use_focal_loss: Whether to use focal modulation for classification
+            use_softmax_loss: Whether to use softmax CE for mutually exclusive anchor/class heads.
+                              If False, uses legacy sigmoid/BCE for anchor/class heads.
             use_iol: Whether to use IoL (kept for compatibility)
             use_giou_loss: Whether to use GIoU loss (Option 3)
             use_diou_loss: Whether to use DIoU loss (Option 3)
@@ -346,7 +347,7 @@ class MultiGridLoss:
                 anchor_loc_loss = self._compute_anchor_loss(
                     true_anchors, pred_anchors, object_mask, ignore_mask, anchor_norm_factor
                 )
-                total_loss_anchor += self.anchor_scale * anchor_loc_loss
+                total_loss_anchor += anchor_loc_loss
                 
             else:  # Option 3
                 # Option 3: GIoU/DIoU/CIoU losses
@@ -387,7 +388,7 @@ class MultiGridLoss:
                 anchor_loss = self._compute_anchor_loss(
                     true_anchors, pred_anchors, object_mask, ignore_mask, anchor_norm_factor
                 )
-                total_loss_anchor += self.anchor_scale * anchor_loss
+                total_loss_anchor += anchor_loss
             
             # ========== CLASSIFICATION LOSS ==========
             # Use ALL classes, not just top-k!
@@ -760,14 +761,15 @@ class MultiGridLoss:
                             object_mask: tf.Tensor, ignore_mask: Optional[tf.Tensor],
                             norm_factor: tf.Tensor) -> tf.Tensor:
         """
-        Compute anchor prediction loss using BCE.
+        Compute anchor prediction loss.
         
-        Anchor loss is computed ONLY on object cells (like classification loss).
-        Anchor prediction answers "which anchor fits this object best", so it should only
-        be computed where objects exist.
+        Anchor prediction is mutually exclusive for the current target format: each positive
+        cell has exactly one selected anchor. The default therefore uses softmax cross-entropy
+        to match the inference decoder. Set use_softmax_loss=False for the legacy sigmoid/BCE
+        behavior.
         
         Formula:
-        L_anchor = Σ object_mask * (1 - ignore_mask) * BCE(true_anchors, pred_anchors) / normalization
+        L_anchor = Σ object_mask * (1 - ignore_mask) * CE(true_anchors, pred_anchors) / normalization
         
         Note: anchor_scale is applied when composing total loss, not here.
         This decouples anchor scaling from object_scale for better controllability.
@@ -780,8 +782,13 @@ class MultiGridLoss:
         if ignore_mask is None:
             ignore_mask = tf.zeros_like(object_mask)
         
-        # BCE loss on anchor predictions
-        anchor_loss = K.binary_crossentropy(true_anchors, pred_anchors, from_logits=True)
+        if self.use_softmax_loss:
+            # One selected anchor per positive cell: use categorical CE over anchors.
+            anchor_loss = K.categorical_crossentropy(true_anchors, pred_anchors, from_logits=True)
+            anchor_loss = tf.expand_dims(anchor_loss, axis=-1)
+        else:
+            # Legacy independent anchor logits.
+            anchor_loss = K.binary_crossentropy(true_anchors, pred_anchors, from_logits=True)
         
         # Apply object mask: ONLY compute anchor loss on object cells
         # Anchor prediction is about "which anchor fits this object best", so it only
@@ -814,15 +821,27 @@ class MultiGridLoss:
     
     def _compute_softmax_classification_loss(self, true_class: tf.Tensor, pred_class: tf.Tensor,
                                             object_mask: tf.Tensor, norm_factor: tf.Tensor) -> tf.Tensor:
-        """Compute softmax focal loss for classification (all classes)."""
-        class_loss = self.softmax_focal_loss.compute_loss(true_class, pred_class)
-        # Broadcasting: [batch, grid_h, grid_w, 1] * [batch, grid_h, grid_w, num_classes]
+        """Compute softmax classification loss for one-label object targets."""
+        if self.label_smoothing > 0:
+            true_class_smooth = (
+                true_class * (1.0 - self.label_smoothing) +
+                self.label_smoothing / self.num_classes
+            )
+        else:
+            true_class_smooth = true_class
+        
+        if self.use_focal_loss:
+            class_loss = self.softmax_focal_loss.compute_loss(true_class_smooth, pred_class)
+        else:
+            class_loss = K.categorical_crossentropy(true_class_smooth, pred_class, from_logits=True)
+        
+        class_loss = tf.expand_dims(class_loss, axis=-1)
         class_loss = class_loss * object_mask
         
         # Apply class weights for handling class imbalance
-        # Expand class_weights: [num_classes] -> [1, 1, 1, num_classes]
         class_weights_expanded = tf.reshape(self.class_weights, [1, 1, 1, self.num_classes])
-        class_loss = class_loss * class_weights_expanded
+        target_class_weight = tf.reduce_sum(true_class * class_weights_expanded, axis=-1, keepdims=True)
+        class_loss = class_loss * target_class_weight
         
         return K.sum(class_loss) / norm_factor
     

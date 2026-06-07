@@ -89,7 +89,8 @@ class MultiGridEvaluator:
             anchors=self.anchors,
             num_classes=len(self.class_names),
             input_shape=model_image_size,
-            rescore_confidence=True
+            rescore_confidence=True,
+            use_softmax=eval_config.get('use_softmax_decode', True)
         )
         
         print(f" Model loaded successfully\n")

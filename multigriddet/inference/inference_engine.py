@@ -113,11 +113,13 @@ class MultiGridInference:
         
         # Initialize decoder
         input_shape = tuple(self.model_config['model']['preset'].get('input_shape', [608, 608, 3])[:2])
+        detection_config = self.config.get('detection', {})
         self.decoder = MultiGridDecoder(
             anchors=self.anchors,
             num_classes=len(self.class_names),
             input_shape=input_shape,
-            rescore_confidence=True
+            rescore_confidence=True,
+            use_softmax=detection_config.get('use_softmax_decode', True)
         )
         
         print(f"   Classes: {len(self.class_names)}")
@@ -474,7 +476,6 @@ class MultiGridInference:
         print("\n" + "=" * 80)
         print("✓ Inference Complete!")
         print("=" * 80)
-
 
 
 
