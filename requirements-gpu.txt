@@ -1,0 +1,8 @@
+# MultiGridDet GPU requirements for Linux / WSL2
+#
+# This re-declares TensorFlow with the official CUDA extra so pip installs a
+# matching TensorFlow GPU runtime instead of relying on whatever cuDNN happens
+# to be present in the container image.
+
+-r requirements.txt
+tensorflow[and-cuda]>=2.17.0,<3.0.0

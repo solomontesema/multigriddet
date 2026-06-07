@@ -6,6 +6,7 @@ Builds models from YAML configuration.
 """
 
 import os
+import re
 from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import tensorflow as tf
@@ -17,6 +18,68 @@ from ..models import build_multigriddet_darknet, build_multigriddet_resnet
 from ..models.multigriddet_darknet import build_multigriddet_darknet_train
 from ..models.multigriddet_resnet import build_multigriddet_resnet_train
 from ..utils.anchors import compute_class_weights
+
+
+def save_weights_npz(model: Model, output_path: str) -> None:
+    """Save model weights to a portable NumPy archive."""
+    weights = model.get_weights()
+    payload = {
+        'metadata_weight_count': np.array([len(weights)], dtype=np.int32),
+    }
+
+    for index, weight in enumerate(weights):
+        payload[f'weight_{index:05d}'] = weight
+
+    np.savez_compressed(output_path, **payload)
+
+
+def load_weights_npz(model: Model, weights_path: str) -> None:
+    """Load model weights from a portable NumPy archive."""
+    with np.load(weights_path, allow_pickle=False) as archive:
+        weight_keys = sorted(
+            key for key in archive.files
+            if re.fullmatch(r'weight_\d{5}', key)
+        )
+        weights = [archive[key] for key in weight_keys]
+
+    expected_count = len(model.get_weights())
+    if len(weights) != expected_count:
+        raise ValueError(
+            f"Portable weights count mismatch: file has {len(weights)} arrays, "
+            f"but model expects {expected_count}."
+        )
+
+    model.set_weights(weights)
+
+
+def load_model_weights(model: Model, weights_path: str) -> str:
+    """Load model weights from a supported checkpoint format."""
+    if weights_path.endswith('.npz'):
+        load_weights_npz(model, weights_path)
+        return "portable NumPy format"
+
+    try:
+        model.load_weights(weights_path, by_name=True)
+        return "legacy by-name format"
+    except ValueError:
+        model.load_weights(weights_path)
+        return "Keras weights format"
+    except OSError as exc:
+        error_message = str(exc)
+        if 'bad object header version number' not in error_message:
+            raise
+
+        raise OSError(
+            "Unable to read the HDF5 weights file. The file header is present, but the internal "
+            "HDF5 object structure is invalid for this checkpoint.\n"
+            "This usually means the checkpoint copy is corrupted/incomplete, or the source job "
+            "saved a broken artifact.\n"
+            f"Weights file: {weights_path}\n"
+            "Recommended recovery:\n"
+            "  1. On the source machine, verify the file opens with h5py.\n"
+            "  2. If it opens there, re-save it and/or export a portable `.npz` archive.\n"
+            "  3. Re-copy the artifact with checksum verification."
+        ) from exc
 
 
 def create_optimizer_from_config(config: Dict[str, Any]) -> tf.keras.optimizers.Optimizer:
@@ -283,14 +346,8 @@ def build_model_for_inference(config: Dict[str, Any], weights_path: str = None) 
         weights_path = config.get('weights_path')
     
     if weights_path and os.path.exists(weights_path):
-        try:
-            # Try loading with by_name=True for legacy models
-            model.load_weights(weights_path, by_name=True)
-            print(f"✓ Loaded weights from: {weights_path}")
-        except ValueError:
-            # Fallback to standard loading for Keras 3.x models
-            model.load_weights(weights_path)
-            print(f"✓ Loaded weights from: {weights_path} (Keras 3.x format)")
+        load_mode = load_model_weights(model, weights_path)
+        print(f"✓ Loaded weights from: {weights_path} ({load_mode})")
     elif weights_path:
         print(f"⚠ Warning: Weights file not found: {weights_path}")
     else:
