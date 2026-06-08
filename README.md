@@ -172,12 +172,27 @@ for dx in (-1, 0, 1):
 git clone https://github.com/solufast-cvprojects/multigriddet.git
 cd MultiGridDet
 
-# Install dependencies
+# CPU-only or manually managed TensorFlow environment
 pip install -r requirements.txt
-
-# Install the package
 pip install -e .
+
+# Linux GPU environment (recommended for Runpod / WSL2)
+pip install -r requirements-gpu.txt
+pip install -e .[gpu]
 ```
+
+### GPU Environment Note
+
+If inference fails with a message like `Loaded runtime CuDNN library ... but source was compiled with ...`, your TensorFlow wheel does not match the CUDA/cuDNN runtime in the container.
+
+Check the resolved TensorFlow build:
+
+```bash
+python3 -c "import tensorflow as tf; print(tf.__version__); print(tf.sysconfig.get_build_info())"
+ldconfig -p | grep cudnn
+```
+
+On prebuilt GPU containers, prefer `requirements-gpu.txt` or `pip install -e .[gpu]` in a clean virtual environment so TensorFlow installs a matching CUDA/cuDNN stack instead of relying on the container's system libraries.
 
 ### Pre-trained Weights
 

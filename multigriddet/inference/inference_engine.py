@@ -53,6 +53,39 @@ class MultiGridInference:
         
         # Load model
         self._load_model()
+
+    @staticmethod
+    def _get_tf_build_summary() -> str:
+        """Return a compact TensorFlow build summary for runtime diagnostics."""
+        try:
+            build_info = tf.sysconfig.get_build_info()
+        except Exception:
+            build_info = {}
+
+        cuda_version = build_info.get('cuda_version', 'unknown')
+        cudnn_version = build_info.get('cudnn_version', 'unknown')
+        return f"TensorFlow {tf.__version__} (build CUDA {cuda_version}, cuDNN {cudnn_version})"
+
+    def _run_model_predict(self, image_data: np.ndarray):
+        """Run model prediction with a clearer message for CUDA/cuDNN mismatches."""
+        try:
+            return self.model.predict(image_data, verbose=0)
+        except tf.errors.FailedPreconditionError as exc:
+            error_message = str(exc)
+            if 'DNN library initialization failed' not in error_message:
+                raise
+
+            raise RuntimeError(
+                "TensorFlow could not initialize the GPU DNN backend.\n"
+                f"Detected build: {self._get_tf_build_summary()}\n"
+                "This usually means the installed TensorFlow wheel does not match the CUDA/cuDNN "
+                "runtime available in the current environment.\n"
+                "On Linux GPU hosts, prefer `pip install -r requirements-gpu.txt` or "
+                "`pip install -e .[gpu]` in a clean virtual environment.\n"
+                "Useful checks:\n"
+                "  python3 -c \"import tensorflow as tf; print(tf.__version__); print(tf.sysconfig.get_build_info())\"\n"
+                "  ldconfig -p | grep cudnn"
+            ) from exc
         
     def _load_model(self):
         """Load the model and weights."""
@@ -80,11 +113,13 @@ class MultiGridInference:
         
         # Initialize decoder
         input_shape = tuple(self.model_config['model']['preset'].get('input_shape', [608, 608, 3])[:2])
+        detection_config = self.config.get('detection', {})
         self.decoder = MultiGridDecoder(
             anchors=self.anchors,
             num_classes=len(self.class_names),
             input_shape=input_shape,
-            rescore_confidence=True
+            rescore_confidence=True,
+            use_softmax=detection_config.get('use_softmax_decode', True)
         )
         
         print(f"   Classes: {len(self.class_names)}")
@@ -118,7 +153,7 @@ class MultiGridInference:
         image_shape = tuple(reversed(image.size))
         
         # Run inference
-        predictions = self.model.predict(image_data, verbose=0)
+        predictions = self._run_model_predict(image_data)
         
         # Post-process
         detection_config = self.config.get('detection', {})
@@ -200,7 +235,7 @@ class MultiGridInference:
                 image_shape = (height, width)
                 
                 # Run inference
-                predictions = self.model.predict(image_data, verbose=0)
+                predictions = self._run_model_predict(image_data)
                 
                 # Post-process
                 nms_method = detection_config.get('nms_method', 'diou')
@@ -255,6 +290,7 @@ class MultiGridInference:
             output_path: Path to save output video
         """
         cap = cv2.VideoCapture(camera_id)
+        print(f"📷 Accessing camera ID {camera_id}...")
         
         if not cap.isOpened():
             raise ValueError(f"Could not open camera: {camera_id}")
@@ -298,7 +334,7 @@ class MultiGridInference:
                 image_shape = (height, width)
                 
                 # Run inference
-                predictions = self.model.predict(image_data, verbose=0)
+                predictions = self._run_model_predict(image_data)
                 
                 # Post-process
                 nms_method = detection_config.get('nms_method', 'diou')
@@ -394,7 +430,8 @@ class MultiGridInference:
         
         elif input_type == 'camera':
             # Camera inference
-            camera_id = input_config.get('camera_id', 0)
+            camera_config = self.config.get('camera', {})
+            camera_id = camera_config.get('device_id', input_config.get('camera_id', 0))
             output_path = None
             
             if output_config.get('save_result', True):
@@ -439,8 +476,6 @@ class MultiGridInference:
         print("\n" + "=" * 80)
         print("✓ Inference Complete!")
         print("=" * 80)
-
-
 
 
 

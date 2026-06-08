@@ -98,7 +98,7 @@ class DiagnosticMultiGridLoss(MultiGridLoss):
             grid_shape = (K.shape(y_pred_layer)[1], K.shape(y_pred_layer)[2])
             
             # Compute ignore mask for all loss options
-            ignore_mask = self._compute_ignore_mask(
+            ignore_mask, assigned_anchor_iou, max_iou_map = self._compute_ignore_mask(
                 pred_xy, pred_wh, true_xy, true_wh,
                 anchor_layer, object_mask, y_true_layer, grid_shape
             )
@@ -124,7 +124,7 @@ class DiagnosticMultiGridLoss(MultiGridLoss):
                 anchor_loc_loss = self._compute_anchor_loss(
                     true_anchors, pred_anchors, object_mask, ignore_mask, anchor_norm_factor
                 )
-                total_loss_anchor += self.anchor_scale * anchor_loc_loss
+                total_loss_anchor += anchor_loc_loss
             else:  # Option 3
                 if self.use_giou_loss:
                     loc_loss = self._compute_giou_loss(
@@ -150,7 +150,9 @@ class DiagnosticMultiGridLoss(MultiGridLoss):
             obj_norm_factor = self._get_normalization_factor(batch_size, grid_shape, object_mask)
             normalization_factors['objectness'].append(obj_norm_factor)
             obj_loss = self._compute_objectness_loss(
-                true_obj, pred_obj, object_mask, ignore_mask, obj_norm_factor
+                true_obj, pred_obj, object_mask, ignore_mask, obj_norm_factor,
+                positive_iou_map=assigned_anchor_iou,
+                max_iou_map=max_iou_map
             )
             total_loss_objectness += obj_loss
             
@@ -163,7 +165,7 @@ class DiagnosticMultiGridLoss(MultiGridLoss):
                 anchor_loss_this_scale = self._compute_anchor_loss(
                     true_anchors, pred_anchors, object_mask, ignore_mask, anchor_norm_factor
                 )
-                total_loss_anchor += self.anchor_scale * anchor_loss_this_scale
+                total_loss_anchor += anchor_loss_this_scale
             
             # ========== CLASSIFICATION LOSS ==========
             class_norm_factor = self._get_normalization_factor(batch_size, grid_shape, object_mask)
@@ -469,6 +471,13 @@ def create_diagnostic_loss(trainer: MultiGridTrainer) -> DiagnosticMultiGridLoss
         no_object_scale=loss_config.get('no_object_scale', 1.0),
         class_scale=loss_config.get('class_scale', 1.0),
         anchor_scale=loss_config.get('anchor_scale', 1.0),
+        use_softmax_loss=loss_config.get('use_softmax_loss', True),
+        use_focal_loss=loss_config.get('use_focal_loss', False),
+        use_iou_aware_objectness=loss_config.get('use_iou_aware_objectness', False),
+        iou_objectness_power=loss_config.get('iou_objectness_power', 1.0),
+        iou_objectness_ratio=loss_config.get('iou_objectness_ratio', 1.0),
+        trainable_nms_weight=loss_config.get('trainable_nms_weight', 0.0),
+        trainable_nms_power=loss_config.get('trainable_nms_power', 2.0),
         loss_normalization=training_config.get('loss_normalization', ['batch'])
     )
     
@@ -759,4 +768,3 @@ Examples:
 
 if __name__ == '__main__':
     sys.exit(main())
-

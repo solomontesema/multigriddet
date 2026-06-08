@@ -47,6 +47,9 @@ setup(
     python_requires=">=3.8",
     install_requires=requirements,
     extras_require={
+        "gpu": [
+            "tensorflow[and-cuda]>=2.17.0,<3.0.0",
+        ],
         "dev": [
             "pytest>=6.0.0",
             "pytest-cov>=2.10.0",

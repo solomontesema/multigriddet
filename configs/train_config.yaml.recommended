@@ -78,19 +78,30 @@ training:
   label_smoothing: 0.01
   elim_grid_sense: false
   
-  # Loss scales (matching model5.h5 training recipe - DO NOT DEVIATE MUCH)
-  # These values were used to train model5.h5, so large changes risk "untraining"
+  # Loss scales. Keep the core YOLO-style terms stable first, then add new
+  # regularizers only as isolated ablations after baseline mAP is recovered.
   loss:
     coord_scale: 5.0     # Keep at 5.0 (matches original training)
     object_scale: 1.0     # Keep at 1.0
     no_object_scale: 0.5  # Keep at 0.5 (prevents negative cell dominance)
     class_scale: 1.0      # Keep at 1.0
     anchor_scale: 1.0     # Keep at 1.0 (now decoupled from object_scale after fix)
-    use_iou_aware_objectness: true   # Make objectness track IoU (reduces ghost boxes)
-    iou_objectness_power: 1.5        # Higher power accentuates low-IoU suppression
-    iou_objectness_ratio: 1.0        # 1.0 = pure IoU signal (best for high-quality datasets)
-    trainable_nms_weight: 0.5        # Soft penalty applied to ignore regions (duplicate anchors)
-    trainable_nms_power: 2.0         # Bias suppression towards the most overlapping duplicates
+    use_softmax_loss: true  # Softmax CE for mutually exclusive anchor/class heads; matches decoder
+    use_focal_loss: false   # Optional focal modulation on the selected classification loss
+    use_iou_aware_objectness: false  # Start from binary objectness; enable only after baseline mAP is recovered
+    iou_objectness_power: 1.5        # If enabled, >1 shrinks scores for imperfect boxes
+    iou_objectness_ratio: 0.5        # If enabled, blend IoU target with binary label before trying pure IoU
+    trainable_nms_weight: 0.0        # Keep off for baseline; try 0.1-0.25 only after IoU-aware ablation passes
+    trainable_nms_power: 2.0         # Higher = focus suppression on the highest-IoU duplicates
+    use_consensus_loss: false       # Enable only as a later ablation; high values can over-constrain 3x3 assignments
+    consensus_kernel_size: 3        # 3x3 cooperation window
+    consensus_iou_power: 1.5        # Higher puts more weight on the best aligned cells
+    consensus_min_iou: 0.001        # Small floor to keep weights stable early in training
+    consensus_coord_scale: 0.05     # If enabled, start with localization only and scale up cautiously
+    consensus_obj_scale: 0.0        # Objectness consensus is risky until confidence calibration is strong
+    consensus_class_scale: 0.0      # Class consensus is risky until anchor/class predictions are stable
+    consensus_stop_gradient: true   # Start with stop_gradient for stability, disable later if desired
+    consensus_center_tolerance: 0.0001  # Tolerance for grouping cells that predict the same center
   
   # Loss normalization: ["batch"] keeps pretrained head from being shocked by different scaling
   # Adding "positives" can help when Mosaic injects many objects, but start with ["batch"] only
