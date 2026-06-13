@@ -119,7 +119,8 @@ class MultiGridInference:
             num_classes=len(self.class_names),
             input_shape=input_shape,
             rescore_confidence=True,
-            use_softmax=detection_config.get('use_softmax_decode', True)
+            use_softmax=detection_config.get('use_softmax_decode', True),
+            xy_activation_scale=detection_config.get('xy_activation_scale', 0.15)
         )
         
         print(f"   Classes: {len(self.class_names)}")
@@ -476,6 +477,5 @@ class MultiGridInference:
         print("\n" + "=" * 80)
         print("✓ Inference Complete!")
         print("=" * 80)
-
 
 

@@ -471,6 +471,7 @@ def create_diagnostic_loss(trainer: MultiGridTrainer) -> DiagnosticMultiGridLoss
         no_object_scale=loss_config.get('no_object_scale', 1.0),
         class_scale=loss_config.get('class_scale', 1.0),
         anchor_scale=loss_config.get('anchor_scale', 1.0),
+        xy_activation_scale=loss_config.get('xy_activation_scale', 0.15),
         use_softmax_loss=loss_config.get('use_softmax_loss', True),
         use_focal_loss=loss_config.get('use_focal_loss', False),
         use_iou_aware_objectness=loss_config.get('use_iou_aware_objectness', False),

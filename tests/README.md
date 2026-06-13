@@ -134,7 +134,7 @@ MultiGridDet assigns each object to a 3x3 neighborhood of grid cells (9 cells to
 - **Same raw_wh values**: Width and height are the same for all cells
 - **Same class and anchor**: All cells predict the same object
 
-The key innovation is the `tanh(0.15*x) + sigmoid(0.15*x)` activation function, which has a range of `[-1, 2]`, allowing offsets to span the 3x3 neighborhood while ensuring all cells decode to the same final box coordinates.
+The key innovation is the configurable `tanh(s*x) + sigmoid(s*x)` activation function, which has a range of `[-1, 2]`, allowing offsets to span the 3x3 neighborhood while ensuring all cells decode to the same final box coordinates.
 
 ### Encoding Process
 
@@ -146,7 +146,7 @@ The key innovation is the `tanh(0.15*x) + sigmoid(0.15*x)` activation function, 
 
 ### Decoding Process
 
-1. **Activation**: Apply `tanh(0.15*raw_xy) + sigmoid(0.15*raw_xy)`
+1. **Activation**: Apply `tanh(s*raw_xy) + sigmoid(s*raw_xy)`
 2. **Add cell_grid**: `box_xy_grid = activated_xy + cell_grid`
 3. **Normalize**: `box_xy_normalized = box_xy_grid / grid_size`
 4. **Convert to pixels**: `abs_xy = box_xy_normalized * input_shape`
@@ -194,4 +194,3 @@ python tests/test_9cell_alignment.py
 - `multigriddet/data/generators.py`: Contains `tf_preprocess_true_boxes` (the function being tested)
 - `multigriddet/postprocess/multigrid_decode.py`: Contains the decoding logic (reference implementation)
 - `configs/train_config.yaml`: Training configuration used by visualization script
-
