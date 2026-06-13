@@ -61,6 +61,7 @@ training:
     no_object_scale: 0.5   # Scale for objectness loss (negative cells) - lower to reduce negative cell dominance
     class_scale: 1.0       # Scale for classification loss
     anchor_scale: 1.0      # Scale for anchor prediction loss
+    xy_activation_scale: 0.15  # Scale inside tanh/sigmoid xy activation; must match eval/infer for a checkpoint
     use_softmax_loss: true  # Softmax CE for mutually exclusive anchor/class heads; matches decoder
     use_focal_loss: false   # Optional focal modulation on the selected classification loss
     use_iou_aware_objectness: false   # Enable to let objectness follow IoU (trainable NMS)

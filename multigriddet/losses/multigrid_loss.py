@@ -41,6 +41,7 @@ class MultiGridLoss:
                  ignore_thresh: float = 0.5,
                  label_smoothing: float = 0.0,
                  elim_grid_sense: bool = False,
+                 xy_activation_scale: float = 0.15,
                  use_focal_loss: bool = False,
                  use_softmax_loss: bool = True,
                  use_iol: bool = True,  # Keep for compatibility
@@ -81,6 +82,9 @@ class MultiGridLoss:
             ignore_thresh: IoU threshold for ignoring objectness loss (future use)
             label_smoothing: Label smoothing factor for classification
             elim_grid_sense: Whether to eliminate grid sensitivity (not implemented)
+            xy_activation_scale: Scale inside tanh/sigmoid center-offset activation.
+                                 Larger values make offsets saturate faster; smaller
+                                 values keep wider gradients but require larger logits.
             use_focal_loss: Whether to use focal modulation for classification
             use_softmax_loss: Whether to use softmax CE for mutually exclusive anchor/class heads.
                               If False, uses legacy sigmoid/BCE for anchor/class heads.
@@ -124,6 +128,9 @@ class MultiGridLoss:
         self.ignore_thresh = ignore_thresh
         self.label_smoothing = label_smoothing
         self.elim_grid_sense = elim_grid_sense
+        if xy_activation_scale <= 0:
+            raise ValueError("xy_activation_scale must be positive")
+        self.xy_activation_scale = float(xy_activation_scale)
         self.use_focal_loss = use_focal_loss
         self.use_softmax_loss = use_softmax_loss
         self.use_iol = use_iol
@@ -187,6 +194,11 @@ class MultiGridLoss:
             self.diou_loss = DIoULoss()
         if use_ciou_loss and loss_option == 3:
             self.ciou_loss = CIoULoss()
+
+    def _activate_xy(self, pred_xy: tf.Tensor) -> tf.Tensor:
+        """Map raw xy logits to the MultiGrid center-offset range."""
+        scaled_xy = self.xy_activation_scale * pred_xy
+        return tf.nn.tanh(scaled_xy) + tf.nn.sigmoid(scaled_xy)
     
     def __call__(self, y_true: List[tf.Tensor], y_pred: List[tf.Tensor]) -> tf.Tensor:
         """Compute MultiGridDet loss."""
@@ -504,7 +516,7 @@ class MultiGridLoss:
         all ground truth boxes in the image, marking cells as ignore if they have high
         IoU with a GT box but are not assigned as positive.
         
-        CRITICAL: Applies tanh(0.15*x) + sigmoid(0.15*x) activation to pred_xy before
+        CRITICAL: Applies tanh(s*x) + sigmoid(s*x) activation to pred_xy before
         computing IoU. This matches the inference pipeline and ensures ignore masks are
         computed using the same decoded coordinates that the model actually predicts.
         Without this activation, IoU uses raw logits which don't match decoded predictions,
@@ -578,11 +590,11 @@ class MultiGridLoss:
         true_wh_flat = tf.reshape(true_wh_abs, [batch_size, -1, 2])  # [batch, grid_h*grid_w, 2]
         object_mask_flat = tf.reshape(object_mask, [batch_size, -1])  # [batch, grid_h*grid_w]
         
-        # Apply activation to pred_xy before converting to absolute coordinates
-        # This matches the inference pipeline: tanh(0.15*x) + sigmoid(0.15*x) to reach [-1, 2] range
+        # Apply activation to pred_xy before converting to absolute coordinates.
+        # This must match the inference decoder.
         # CRITICAL: Without this activation, IoU computation uses raw logits which don't match
         # the actual decoded predictions, leading to incorrect ignore masks and loss divergence
-        pred_xy_activated = tf.nn.tanh(0.15 * pred_xy) + tf.nn.sigmoid(0.15 * pred_xy)
+        pred_xy_activated = self._activate_xy(pred_xy)
         
         # Convert predicted boxes to absolute coordinates for each anchor
         pred_xy_abs = (pred_xy_activated + grid_coords) * scale  # [batch, grid_h, grid_w, 2]
@@ -736,13 +748,13 @@ class MultiGridLoss:
         Applies tanh+sigmoid activation to pred_xy to match inference pipeline behavior.
         
         Formula:
-        pred_xy_activated = tanh(0.15 * pred_xy) + sigmoid(0.15 * pred_xy)
+        pred_xy_activated = tanh(xy_activation_scale * pred_xy) + sigmoid(xy_activation_scale * pred_xy)
         L_xy = Σ object_mask * (true_xy - pred_xy_activated)²
         L_wh = Σ object_mask * (true_wh - pred_wh)²
         L_location = L_xy + L_wh
         """
         # Apply tanh+sigmoid activation to pred_xy to match inference pipeline
-        pred_xy_activated = tf.nn.tanh(0.15 * pred_xy) + tf.nn.sigmoid(0.15 * pred_xy)
+        pred_xy_activated = self._activate_xy(pred_xy)
         
         # XY coordinate loss
         xy_diff = true_xy - pred_xy_activated

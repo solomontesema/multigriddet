@@ -27,7 +27,8 @@ class MultiGridDecoder:
                  num_classes: int,
                  input_shape: Tuple[int, int] = (608, 608),
                  rescore_confidence: bool = True,
-                 use_softmax: bool = True):
+                 use_softmax: bool = True,
+                 xy_activation_scale: float = 0.15):
         """
         Initialize MultiGridDet decoder.
         
@@ -37,12 +38,16 @@ class MultiGridDecoder:
             input_shape: Input image shape (height, width)
             rescore_confidence: Whether to rescore confidence using IoL
             use_softmax: Whether to use softmax for anchor and class probabilities
+            xy_activation_scale: Scale inside tanh/sigmoid center-offset activation
         """
         self.anchors = anchors
         self.num_classes = num_classes
         self.input_shape = input_shape
         self.rescore_confidence = rescore_confidence
         self.use_softmax = use_softmax
+        if xy_activation_scale <= 0:
+            raise ValueError("xy_activation_scale must be positive")
+        self.xy_activation_scale = float(xy_activation_scale)
         self.num_layers = len(anchors)
     
     def decode_predictions(self, predictions: List[np.ndarray]) -> np.ndarray:
@@ -148,7 +153,8 @@ class MultiGridDecoder:
         
         # MultiGridDet innovation: Use tanh + sigmoid for coordinate prediction
         # This helps with grid sensitivity elimination
-        raw_xy = (np.tanh(0.15 * raw_xy) + expit(0.15 * raw_xy))
+        scaled_xy = self.xy_activation_scale * raw_xy
+        raw_xy = np.tanh(scaled_xy) + expit(scaled_xy)
         
         # Convert to absolute coordinates
         box_xy = raw_xy + cell_grid

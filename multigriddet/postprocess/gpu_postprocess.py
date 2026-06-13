@@ -14,7 +14,8 @@ def multigriddet_decode_tf(predictions: List[tf.Tensor],
                          anchors: List[np.ndarray], 
                          num_classes: int, 
                          input_dims: Tuple[int, int],
-                         rescore_confidence: bool = True) -> tf.Tensor:
+                         rescore_confidence: bool = True,
+                         xy_activation_scale: float = 0.15) -> tf.Tensor:
     """
     TensorFlow GPU version of multigriddet_decode.
     
@@ -24,6 +25,7 @@ def multigriddet_decode_tf(predictions: List[tf.Tensor],
         num_classes: Number of object classes
         input_dims: Model input dimensions (height, width)
         rescore_confidence: Whether to rescore confidence using IoL
+        xy_activation_scale: Scale inside tanh/sigmoid center-offset activation
         
     Returns:
         decoded_predictions: (batch, num_boxes, 5+num_classes) tensor on GPU
@@ -70,7 +72,8 @@ def multigriddet_decode_tf(predictions: List[tf.Tensor],
         
         # Decode box coordinates
         # Apply custom activation to xy (same as original)
-        raw_xy_processed = (tf.nn.tanh(0.15 * raw_xy) + tf.nn.sigmoid(0.15 * raw_xy))
+        scaled_xy = xy_activation_scale * raw_xy
+        raw_xy_processed = tf.nn.tanh(scaled_xy) + tf.nn.sigmoid(scaled_xy)
         box_xy = raw_xy_processed + x_y_offset
         
         # Get best anchor for each grid cell
@@ -229,7 +232,8 @@ def multigriddet_postprocess_gpu(multigriddet_outputs: List[tf.Tensor],
                                confidence: float = 0.001, 
                                nms_threshold: float = 0.45,
                                rescore_confidence: bool = True,
-                               use_iol: bool = True) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
+                               use_iol: bool = True,
+                               xy_activation_scale: float = 0.15) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor, tf.Tensor]:
     """
     GPU-accelerated postprocessing for batched evaluation.
     
@@ -243,6 +247,7 @@ def multigriddet_postprocess_gpu(multigriddet_outputs: List[tf.Tensor],
         confidence: Score threshold
         nms_threshold: NMS IoU threshold
         rescore_confidence: Whether to rescore confidence
+        xy_activation_scale: Scale inside tanh/sigmoid center-offset activation
         
     Returns:
         boxes: (batch, max_boxes, 4) in [x1, y1, x2, y2] format
@@ -251,7 +256,14 @@ def multigriddet_postprocess_gpu(multigriddet_outputs: List[tf.Tensor],
         valid_detections: (batch,) number of valid boxes per image
     """
     # 1. Decode predictions on GPU
-    predictions = multigriddet_decode_tf(multigriddet_outputs, anchors, num_classes, model_image_size, rescore_confidence)
+    predictions = multigriddet_decode_tf(
+        multigriddet_outputs,
+        anchors,
+        num_classes,
+        model_image_size,
+        rescore_confidence,
+        xy_activation_scale
+    )
     
     # 2. Correct boxes from model space to image space
     predictions = correct_boxes_tf(predictions, image_shapes, model_image_size)

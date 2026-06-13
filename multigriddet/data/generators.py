@@ -2633,9 +2633,12 @@ def tf_best_fit_and_layer_batch(boxes_wh: tf.Tensor, anchors: List[tf.Tensor]) -
 
 
 @tf.function
-def _invert_activation_numerically(desired_offset: tf.Tensor, max_iterations: int = 50, tolerance: float = 1e-8) -> tf.Tensor:
+def _invert_activation_numerically(desired_offset: tf.Tensor,
+                                   xy_activation_scale: float = 0.15,
+                                   max_iterations: int = 50,
+                                   tolerance: float = 1e-8) -> tf.Tensor:
     """
-    Numerically invert f(x) = tanh(0.15*x) + sigmoid(0.15*x) to find raw_xy.
+    Numerically invert f(x) = tanh(s*x) + sigmoid(s*x) to find raw_xy.
     
     Uses Newton's method with safeguards for stability.
     The activation function has range approximately [0, 2] for x in reasonable range.
@@ -2643,17 +2646,20 @@ def _invert_activation_numerically(desired_offset: tf.Tensor, max_iterations: in
     
     Args:
         desired_offset: Target value after activation (shape: any)
+        xy_activation_scale: Scale ``s`` inside tanh/sigmoid center-offset activation
         max_iterations: Maximum Newton iterations (increased for better convergence)
         tolerance: Convergence tolerance (tighter for better precision)
         
     Returns:
         raw_xy: Pre-activation value such that f(raw_xy) ≈ desired_offset
     """
+    xy_activation_scale = tf.cast(xy_activation_scale, tf.float32)
     # Initial guess: approximate linear relationship for small values
-    # For small x: tanh(0.15*x) ≈ 0.15*x, sigmoid(0.15*x) ≈ 0.5 + 0.0375*x
-    # So f(x) ≈ 0.5 + 0.1875*x, thus x ≈ (f(x) - 0.5) / 0.1875
+    # For small x: tanh(s*x) ~= s*x, sigmoid(s*x) ~= 0.5 + 0.25*s*x
+    # So f(x) ~= 0.5 + 1.25*s*x.
     # But for larger offsets, we need a better initial guess
-    x = (desired_offset - 0.5) / 0.1875
+    linear_slope = tf.maximum(1.25 * xy_activation_scale, 1e-8)
+    x = (desired_offset - 0.5) / linear_slope
     
     # For offsets near the edges of [-1, 2], we need larger x values
     # Clamp initial guess but allow wider range for edge cases
@@ -2661,13 +2667,14 @@ def _invert_activation_numerically(desired_offset: tf.Tensor, max_iterations: in
     
     # Use tf.while_loop for iteration
     def body(i, x):
-        # Compute f(x) = tanh(0.15*x) + sigmoid(0.15*x)
-        fx = tf.tanh(0.15 * x) + tf.sigmoid(0.15 * x)
+        # Compute f(x) = tanh(s*x) + sigmoid(s*x)
+        scaled_x = xy_activation_scale * x
+        fx = tf.tanh(scaled_x) + tf.sigmoid(scaled_x)
         
-        # Compute f'(x) = 0.15 * (1 - tanh^2(0.15*x)) + 0.15 * sigmoid(0.15*x) * (1 - sigmoid(0.15*x))
-        tanh_val = tf.tanh(0.15 * x)
-        sigmoid_val = tf.sigmoid(0.15 * x)
-        fprime = 0.15 * (1.0 - tanh_val * tanh_val) + 0.15 * sigmoid_val * (1.0 - sigmoid_val)
+        # Compute f'(x) = s * (1 - tanh^2(s*x)) + s * sigmoid(s*x) * (1 - sigmoid(s*x))
+        tanh_val = tf.tanh(scaled_x)
+        sigmoid_val = tf.sigmoid(scaled_x)
+        fprime = xy_activation_scale * (1.0 - tanh_val * tanh_val) + xy_activation_scale * sigmoid_val * (1.0 - sigmoid_val)
         
         # Newton step: x_new = x - (f(x) - desired) / f'(x)
         # Add small epsilon to avoid division by zero
@@ -2682,7 +2689,8 @@ def _invert_activation_numerically(desired_offset: tf.Tensor, max_iterations: in
     
     def condition(i, x):
         # Continue if not converged and under max iterations
-        fx = tf.tanh(0.15 * x) + tf.sigmoid(0.15 * x)
+        scaled_x = xy_activation_scale * x
+        fx = tf.tanh(scaled_x) + tf.sigmoid(scaled_x)
         diff = tf.abs(fx - desired_offset)
         return tf.logical_and(i < max_iterations, tf.reduce_max(diff) >= tolerance)
     
