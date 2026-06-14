@@ -183,11 +183,20 @@ def load_weights_with_debug(model: Model, weights_path: str, by_name: bool = Tru
             if layer and len(layer.weights) > 0:
                 sample_weights_before[layer_name] = layer.weights[0].numpy().copy()
         
-        # Try loading weights with by_name first
-        # If that fails or loads very few layers, try loading by position (without by_name)
-        # This handles cases where layer names don't match due to auto-incrementing in the same session
+        # Keras 3 distinguishes legacy HDF5 checkpoints from new weights-only
+        # checkpoints. Files ending in ".weights.h5" must be loaded without
+        # passing by_name at all; even by_name=False routes into the legacy
+        # loader and raises an error.
+        is_weights_only_h5 = weights_path.endswith(".weights.h5")
+
         try:
-            if by_name:
+            if is_weights_only_h5:
+                print("  [INFO] Detected Keras weights-only checkpoint; loading by topology")
+                model.load_weights(weights_path)
+            elif by_name:
+                # Try loading weights with by_name first.
+                # If that fails or loads very few layers, try loading by position.
+                # This handles cases where layer names don't match due to auto-incrementing in the same session.
                 model.load_weights(weights_path, by_name=True, skip_mismatch=True)
                 # Check if we actually loaded weights by verifying a sample layer changed
                 weights_loaded = False
@@ -215,6 +224,8 @@ def load_weights_with_debug(model: Model, weights_path: str, by_name: bool = Tru
                 model.load_weights(weights_path, by_name=False)
         except Exception as e:
             print(f"  [WARNING] Weight loading failed: {e}")
+            if is_weights_only_h5:
+                raise
             # Try fallback: load by position
             try:
                 print(f"  [INFO] Attempting fallback: loading by position...")

@@ -62,6 +62,10 @@ training:
     class_scale: 1.0       # Scale for classification loss
     anchor_scale: 1.0      # Scale for anchor prediction loss
     xy_activation_scale: 0.15  # Scale inside tanh/sigmoid xy activation; must match eval/infer for a checkpoint
+    use_iol: true          # Use IoL instead of IoU for ignore masks and overlap-weighted localization
+    use_overlap_weighted_localization: true  # Weight 3x3 localization cells by their assigned box overlap
+    localization_overlap_power: 1.0  # Higher focuses localization gradients on better-overlapping cells
+    localization_overlap_min: 0.25   # Gradient floor so poorly localized positives can still improve
     use_softmax_loss: true  # Softmax CE for mutually exclusive anchor/class heads; matches decoder
     use_focal_loss: false   # Optional focal modulation on the selected classification loss
     use_iou_aware_objectness: false   # Enable to let objectness follow IoU (trainable NMS)

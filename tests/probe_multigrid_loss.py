@@ -109,12 +109,14 @@ class DiagnosticMultiGridLoss(MultiGridLoss):
             
             if self.loss_option == 1:
                 loc_loss = self._compute_mse_loss(
-                    true_xy, true_wh, pred_xy, pred_wh, object_mask
+                    true_xy, true_wh, pred_xy, pred_wh, object_mask,
+                    overlap_weight=assigned_anchor_iou
                 )
                 loc_loss = loc_loss / loc_norm_factor
             elif self.loss_option == 2:
                 loc_loss = self._compute_mse_loss(
-                    true_xy, true_wh, pred_xy, pred_wh, object_mask
+                    true_xy, true_wh, pred_xy, pred_wh, object_mask,
+                    overlap_weight=assigned_anchor_iou
                 )
                 loc_loss = loc_loss / loc_norm_factor
                 
@@ -140,7 +142,8 @@ class DiagnosticMultiGridLoss(MultiGridLoss):
                     )
                 else:
                     loc_loss = self._compute_mse_loss(
-                        true_xy, true_wh, pred_xy, pred_wh, object_mask
+                        true_xy, true_wh, pred_xy, pred_wh, object_mask,
+                        overlap_weight=assigned_anchor_iou
                     )
                 loc_loss = loc_loss / loc_norm_factor
             
@@ -472,6 +475,7 @@ def create_diagnostic_loss(trainer: MultiGridTrainer) -> DiagnosticMultiGridLoss
         class_scale=loss_config.get('class_scale', 1.0),
         anchor_scale=loss_config.get('anchor_scale', 1.0),
         xy_activation_scale=loss_config.get('xy_activation_scale', 0.15),
+        use_iol=loss_config.get('use_iol', True),
         use_softmax_loss=loss_config.get('use_softmax_loss', True),
         use_focal_loss=loss_config.get('use_focal_loss', False),
         use_iou_aware_objectness=loss_config.get('use_iou_aware_objectness', False),
@@ -479,6 +483,9 @@ def create_diagnostic_loss(trainer: MultiGridTrainer) -> DiagnosticMultiGridLoss
         iou_objectness_ratio=loss_config.get('iou_objectness_ratio', 1.0),
         trainable_nms_weight=loss_config.get('trainable_nms_weight', 0.0),
         trainable_nms_power=loss_config.get('trainable_nms_power', 2.0),
+        use_overlap_weighted_localization=loss_config.get('use_overlap_weighted_localization', True),
+        localization_overlap_power=loss_config.get('localization_overlap_power', 1.0),
+        localization_overlap_min=loss_config.get('localization_overlap_min', 0.25),
         loss_normalization=training_config.get('loss_normalization', ['batch'])
     )
     

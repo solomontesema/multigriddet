@@ -87,12 +87,16 @@ training:
     class_scale: 1.0      # Keep at 1.0
     anchor_scale: 1.0     # Keep at 1.0 (now decoupled from object_scale after fix)
     xy_activation_scale: 0.15  # Scale inside tanh/sigmoid xy activation; must match eval/infer for a checkpoint
+    use_iol: true          # Use IoL instead of IoU for ignore masks and overlap-weighted localization
+    use_overlap_weighted_localization: true  # Weight 3x3 localization cells by their assigned box overlap
+    localization_overlap_power: 1.0  # Higher focuses localization gradients on better-overlapping cells
+    localization_overlap_min: 0.25   # Gradient floor so poorly localized positives can still improve
     use_softmax_loss: true  # Softmax CE for mutually exclusive anchor/class heads; matches decoder
     use_focal_loss: false   # Optional focal modulation on the selected classification loss
-    use_iou_aware_objectness: false  # Start from binary objectness; enable only after baseline mAP is recovered
-    iou_objectness_power: 1.5        # If enabled, >1 shrinks scores for imperfect boxes
+    use_iou_aware_objectness: true   # Let objectness track localization quality to reduce noisy high-recall boxes
+    iou_objectness_power: 1.0        # Start linear; increase only if confidence remains over-optimistic
     iou_objectness_ratio: 0.5        # If enabled, blend IoU target with binary label before trying pure IoU
-    trainable_nms_weight: 0.0        # Keep off for baseline; try 0.1-0.25 only after IoU-aware ablation passes
+    trainable_nms_weight: 0.1        # Small duplicate penalty for ignored overlap regions
     trainable_nms_power: 2.0         # Higher = focus suppression on the highest-IoU duplicates
     use_consensus_loss: false       # Enable only as a later ablation; high values can over-constrain 3x3 assignments
     consensus_kernel_size: 3        # 3x3 cooperation window
