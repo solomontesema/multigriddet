@@ -5,12 +5,13 @@ Generate dataset-specific anchors for MultiGridDet.
 
 The active MultiGridDet anchor loader expects one detection scale per line:
 
-    9,10 13,28 16,36
-    31,19 36,45 64,73
-    108,131 196,226 411,369
+    112,74 149,190 370,328
+    28,17 56,112 57,35
+    9,10 13,28 28,55
 
-Each line contains the anchors assigned to one prediction head, ordered from
-small to large objects.
+Each line contains the anchors assigned to one prediction head. The default
+order is large, medium, small to match model outputs y1, y2, y3
+(stride 32, stride 16, stride 8).
 """
 
 import argparse
@@ -32,6 +33,7 @@ class MultiGridAnchorKMeans:
         input_shape: Tuple[int, int] = (608, 608),
         anchors_per_scale: int = 3,
         metric: str = "iol",
+        scale_order: str = "large-to-small",
         seed: int = 42,
     ):
         self.cluster_number = cluster_number
@@ -40,6 +42,7 @@ class MultiGridAnchorKMeans:
         self.input_shape = input_shape
         self.anchors_per_scale = anchors_per_scale
         self.metric = metric
+        self.scale_order = scale_order
         self.seed = seed
 
     def overlap(self, boxes: np.ndarray, clusters: np.ndarray) -> np.ndarray:
@@ -127,7 +130,7 @@ class MultiGridAnchorKMeans:
         return np.asarray(boxes, dtype=np.float32)
 
     def sort_and_group(self, anchors: np.ndarray) -> np.ndarray:
-        """Sort anchors by area and reshape to [num_scales, anchors_per_scale, 2]."""
+        """Sort anchors by area and group them in model output order."""
         areas = anchors[:, 0] * anchors[:, 1]
         anchors = anchors[np.argsort(areas)]
 
@@ -137,7 +140,32 @@ class MultiGridAnchorKMeans:
             )
 
         num_scales = self.cluster_number // self.anchors_per_scale
-        return anchors.reshape(num_scales, self.anchors_per_scale, 2)
+        grouped = anchors.reshape(num_scales, self.anchors_per_scale, 2)
+
+        if self.scale_order == "large-to-small":
+            grouped = grouped[::-1]
+        elif self.scale_order != "small-to-large":
+            raise ValueError(f"Unsupported scale_order: {self.scale_order}")
+
+        return grouped
+
+    def layer_label(self, scale_idx: int, num_scales: int) -> str:
+        """Return a human-readable prediction-head label."""
+        if num_scales == 3 and self.scale_order == "large-to-small":
+            labels = [
+                "layer 0 / stride 32 / large",
+                "layer 1 / stride 16 / medium",
+                "layer 2 / stride 8 / small",
+            ]
+            return labels[scale_idx]
+        if num_scales == 3 and self.scale_order == "small-to-large":
+            labels = [
+                "layer 0 / small",
+                "layer 1 / medium",
+                "layer 2 / large",
+            ]
+            return labels[scale_idx]
+        return f"scale {scale_idx}"
 
     def save_anchors(self, grouped_anchors: np.ndarray, legacy_yolo_file: str = None) -> None:
         """Save anchors in active MultiGridDet format."""
@@ -174,14 +202,16 @@ class MultiGridAnchorKMeans:
 
         print(f"Parsed boxes: {len(boxes):,}")
         print(f"Metric: {self.metric.upper()}")
+        print(f"Scale order: {self.scale_order}")
         print(f"Average best {self.metric.upper()}: {score * 100:.2f}%")
         print(f"Saved MultiGridDet anchors to: {self.anchors_file}")
+        num_scales = grouped_anchors.shape[0]
         for scale_idx, scale_anchors in enumerate(grouped_anchors):
             pairs = " ".join(
                 f"{int(round(anchor[0]))},{int(round(anchor[1]))}"
                 for anchor in scale_anchors
             )
-            print(f"  scale {scale_idx}: {pairs}")
+            print(f"  {self.layer_label(scale_idx, num_scales)}: {pairs}")
 
         if legacy_yolo_file:
             print(f"Saved legacy YOLO one-line anchors to: {legacy_yolo_file}")
@@ -246,6 +276,15 @@ def main() -> int:
         help="Overlap metric for clustering (default: iol, matching MultiGridDet assignment)",
     )
     parser.add_argument(
+        "--scale-order",
+        choices=["large-to-small", "small-to-large"],
+        default="large-to-small",
+        help=(
+            "Order of output lines. Default large-to-small matches MultiGridDet "
+            "outputs y1/y2/y3: stride32, stride16, stride8."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
@@ -272,6 +311,7 @@ def main() -> int:
         input_shape=args.input_shape,
         anchors_per_scale=args.anchors_per_scale,
         metric=args.metric,
+        scale_order=args.scale_order,
         seed=args.seed,
     )
     generator.generate_anchors(legacy_yolo_file=args.legacy_yolo_file)

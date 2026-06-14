@@ -25,11 +25,14 @@ python scripts/kmeans_anchors.py \
   --anchors-per-scale 3 \
   --input-shape 608,608 \
   --metric iol \
+  --scale-order large-to-small \
   --anchors-file configs/coco_custom_anchors.txt
 ```
 
 `--metric iol` is the default and matches MultiGridDet's anchor assignment logic.
 Use `--metric iou` only if you explicitly want YOLO-style IoU clustering.
+`--scale-order large-to-small` is also the default and matches the current
+MultiGridDet model output order.
 
 ## Output Format
 
@@ -37,14 +40,24 @@ The active MultiGridDet loader expects one detection scale per line, with
 whitespace-separated `width,height` pairs:
 
 ```text
-9,10 13,28 16,36
-31,19 36,45 64,73
-108,131 196,226 411,369
+112,74 149,190 370,328
+28,17 56,112 57,35
+9,10 13,28 28,55
 ```
 
-The lines are ordered from small to large anchors, matching the three prediction
-heads. For the current Darknet config, keep `9` total anchors split as `3` per
-scale.
+Line order matters. The current Darknet model returns predictions as
+`[y1, y2, y3]`, where `y1` is the coarse stride-32 head for large objects,
+`y2` is the stride-16 head for medium objects, and `y3` is the stride-8 head for
+small objects. Therefore the anchor file must be ordered:
+
+```text
+line 0: large anchors  -> layer 0 / y1 / stride 32
+line 1: medium anchors -> layer 1 / y2 / stride 16
+line 2: small anchors  -> layer 2 / y3 / stride 8
+```
+
+This is the same ordering used by `configs/yolov3_coco_anchor.txt`. For the
+current Darknet config, keep `9` total anchors split as `3` per scale.
 
 ## Use The Anchors
 
