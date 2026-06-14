@@ -44,7 +44,7 @@ class MultiGridLoss:
                  xy_activation_scale: float = 0.15,
                  use_focal_loss: bool = False,
                  use_softmax_loss: bool = True,
-                 use_iol: bool = True,  # Keep for compatibility
+                 use_iol: bool = True,
                  use_giou_loss: bool = False,
                  use_diou_loss: bool = False,
                  use_ciou_loss: bool = False,
@@ -63,6 +63,9 @@ class MultiGridLoss:
                  iou_objectness_ratio: float = 1.0,
                  trainable_nms_weight: float = 0.0,
                  trainable_nms_power: float = 2.0,
+                 use_overlap_weighted_localization: bool = True,
+                 localization_overlap_power: float = 1.0,
+                 localization_overlap_min: float = 0.25,
                  use_consensus_loss: bool = False,
                  consensus_kernel_size: int = 3,
                  consensus_iou_power: float = 1.5,
@@ -88,7 +91,8 @@ class MultiGridLoss:
             use_focal_loss: Whether to use focal modulation for classification
             use_softmax_loss: Whether to use softmax CE for mutually exclusive anchor/class heads.
                               If False, uses legacy sigmoid/BCE for anchor/class heads.
-            use_iol: Whether to use IoL (kept for compatibility)
+            use_iol: Whether to use IoL instead of IoU for ignore masks, objectness overlap targets,
+                     duplicate suppression, and overlap-weighted localization
             use_giou_loss: Whether to use GIoU loss (Option 3)
             use_diou_loss: Whether to use DIoU loss (Option 3)
             use_ciou_loss: Whether to use CIoU loss (Option 3)
@@ -112,6 +116,9 @@ class MultiGridLoss:
             iou_objectness_ratio: Blend factor between IoU target and binary (1.0 = pure IoU, 0.0 = legacy target)
             trainable_nms_weight: Additional weight applied to ignore regions to push duplicates down
             trainable_nms_power: Exponent for scaling the ignore penalty by IoU (higher = focus on high-overlap dupes)
+            use_overlap_weighted_localization: If True, weight positive localization MSE by assigned box overlap
+            localization_overlap_power: Exponent applied to localization overlap weights
+            localization_overlap_min: Minimum positive localization weight to keep gradients alive early in training
             use_consensus_loss: Enables variance-based consensus regularization across MultiGrid assignments
             consensus_kernel_size: Spatial window (odd) used to gather cooperative cells (3 = 3x3 neighborhood)
             consensus_iou_power: Exponent applied to IoU weights when computing consensus distributions
@@ -151,6 +158,9 @@ class MultiGridLoss:
         self.iou_objectness_ratio = float(np.clip(iou_objectness_ratio, 0.0, 1.0))
         self.trainable_nms_weight = float(trainable_nms_weight)
         self.trainable_nms_power = trainable_nms_power
+        self.use_overlap_weighted_localization = use_overlap_weighted_localization
+        self.localization_overlap_power = localization_overlap_power
+        self.localization_overlap_min = float(np.clip(localization_overlap_min, 0.0, 1.0))
         self.use_consensus_loss = use_consensus_loss
         self.consensus_kernel_size = consensus_kernel_size
         self.consensus_iou_power = consensus_iou_power
@@ -343,14 +353,16 @@ class MultiGridLoss:
             if self.loss_option == 1:
                 # Option 1: Simple MSE (YOLOv3 style)
                 loc_loss = self._compute_mse_loss(
-                    true_xy, true_wh, pred_xy, pred_wh, object_mask
+                    true_xy, true_wh, pred_xy, pred_wh, object_mask,
+                    overlap_weight=assigned_anchor_iou
                 )
                 loc_loss = loc_loss / loc_norm_factor
                 
             elif self.loss_option == 2:
                 # Option 2: MSE + Anchor prediction loss
                 loc_loss = self._compute_mse_loss(
-                    true_xy, true_wh, pred_xy, pred_wh, object_mask
+                    true_xy, true_wh, pred_xy, pred_wh, object_mask,
+                    overlap_weight=assigned_anchor_iou
                 )
                 loc_loss = loc_loss / loc_norm_factor
                 
@@ -377,7 +389,8 @@ class MultiGridLoss:
                     )
                 else:
                     loc_loss = self._compute_mse_loss(
-                        true_xy, true_wh, pred_xy, pred_wh, object_mask
+                        true_xy, true_wh, pred_xy, pred_wh, object_mask,
+                        overlap_weight=assigned_anchor_iou
                     )
                 loc_loss = loc_loss / loc_norm_factor
             
@@ -455,9 +468,9 @@ class MultiGridLoss:
         
         return total_loss
     
-    def _compute_iou_batch(self, boxes1: tf.Tensor, boxes2: tf.Tensor) -> tf.Tensor:
+    def _compute_overlap_batch(self, boxes1: tf.Tensor, boxes2: tf.Tensor) -> tf.Tensor:
         """
-        Compute IoU between two sets of boxes using vectorized operations.
+        Compute IoU or IoL between two sets of boxes using vectorized operations.
         
         Args:
             boxes1: First set of boxes in center format [..., 4] (cx, cy, w, h)
@@ -466,7 +479,7 @@ class MultiGridLoss:
                    Shape: [batch, max_boxes, 4]
         
         Returns:
-            IoU matrix: [batch, grid_h, grid_w, max_boxes] or [batch, max_boxes, max_boxes]
+            Overlap matrix: [batch, grid_h, grid_w, max_boxes] or [batch, max_boxes, max_boxes]
         """
         # Convert to corner format
         boxes1_mins = boxes1[..., 0:2] - boxes1[..., 2:4] / 2.0
@@ -496,13 +509,14 @@ class MultiGridLoss:
         boxes1_area_expanded = tf.expand_dims(boxes1_area, axis=-1)  # [..., 1]
         boxes2_area_expanded = tf.expand_dims(boxes2_area, axis=-3)  # [..., 1, ...]
         
-        # Compute union
-        union_area = boxes1_area_expanded + boxes2_area_expanded - intersect_area
-        
-        # Compute IoU
-        iou = intersect_area / (union_area + self.eps)
-        
-        return iou
+        if self.use_iol:
+            # IoL: intersection over largest box area, matching the existing NMS definition.
+            denominator = K.maximum(boxes1_area_expanded, boxes2_area_expanded)
+        else:
+            # IoU: intersection over union.
+            denominator = boxes1_area_expanded + boxes2_area_expanded - intersect_area
+
+        return intersect_area / (denominator + self.eps)
     
     def _compute_ignore_mask(self, pred_xy: tf.Tensor, pred_wh: tf.Tensor,
                             true_xy: tf.Tensor, true_wh: tf.Tensor,
@@ -510,16 +524,16 @@ class MultiGridLoss:
                             y_true_layer: tf.Tensor, grid_shape: Tuple[tf.Tensor, tf.Tensor]) -> Tuple[tf.Tensor, tf.Tensor, tf.Tensor]:
         """
         Compute ignore mask for objectness and anchor loss.
-        Ignore predictions with IoU > ignore_thresh but not assigned as positive.
+        Ignore predictions with overlap > ignore_thresh but not assigned as positive.
         
-        This implementation computes IoU between predicted boxes (for each anchor) and
+        This implementation computes IoU/IoL between predicted boxes (for each anchor) and
         all ground truth boxes in the image, marking cells as ignore if they have high
-        IoU with a GT box but are not assigned as positive.
+        overlap with a GT box but are not assigned as positive.
         
         CRITICAL: Applies tanh(s*x) + sigmoid(s*x) activation to pred_xy before
-        computing IoU. This matches the inference pipeline and ensures ignore masks are
+        computing overlap. This matches the inference pipeline and ensures ignore masks are
         computed using the same decoded coordinates that the model actually predicts.
-        Without this activation, IoU uses raw logits which don't match decoded predictions,
+        Without this activation, overlap uses raw logits which don't match decoded predictions,
         leading to incorrect ignore masks and loss divergence during fine-tuning.
         
         Args:
@@ -535,8 +549,8 @@ class MultiGridLoss:
         Returns:
             Tuple:
               - ignore_mask [batch, grid_h, grid_w, 1]: 1.0 where cells should be ignored
-              - assigned_anchor_iou [batch, grid_h, grid_w, 1]: IoU of the assigned anchor (0 for negatives)
-              - max_iou_map [batch, grid_h, grid_w, 1]: Max IoU over anchors (used for soft suppression)
+              - assigned_anchor_iou [batch, grid_h, grid_w, 1]: Overlap of the assigned anchor (0 for negatives)
+              - max_iou_map [batch, grid_h, grid_w, 1]: Max overlap over anchors (used for soft suppression)
         """
         batch_size = K.shape(pred_xy)[0]
         grid_h, grid_w = grid_shape
@@ -617,8 +631,8 @@ class MultiGridLoss:
         # Reshape for processing: [batch, grid_h*grid_w*num_anchors, 4]
         pred_boxes_flat = tf.reshape(pred_boxes_all, [batch_size, -1, 4])
         
-        # Compute IoU with all GT boxes for each batch item
-        def compute_iou_for_batch(batch_idx):
+        # Compute overlap with all GT boxes for each batch item
+        def compute_overlap_for_batch(batch_idx):
             pred_b = pred_boxes_flat[batch_idx]  # [grid_h*grid_w*num_anchors, 4]
             gt_b = tf.concat([true_xy_flat[batch_idx], true_wh_flat[batch_idx]], axis=-1)  # [grid_h*grid_w, 4]
             valid_mask_b = object_mask_flat[batch_idx] > 0.5  # [grid_h*grid_w]
@@ -632,19 +646,19 @@ class MultiGridLoss:
             def compute_with_gt():
                 gt_valid = tf.gather(gt_b, valid_indices)  # [num_valid, 4]
                 
-                # Compute IoU: [grid_h*grid_w*num_anchors, num_valid]
+                # Compute overlap: [grid_h*grid_w*num_anchors, num_valid]
                 # pred_b: [grid_h*grid_w*num_anchors, 4]
                 # gt_valid: [num_valid, 4]
                 # Expand for broadcasting: [grid_h*grid_w*num_anchors, 1, 4] and [1, num_valid, 4]
                 pred_b_expanded = tf.expand_dims(pred_b, axis=1)  # [grid_h*grid_w*num_anchors, 1, 4]
                 gt_valid_expanded = tf.expand_dims(gt_valid, axis=0)  # [1, num_valid, 4]
                 
-                iou_matrix = self._compute_iou_batch(pred_b_expanded, gt_valid_expanded)
+                iou_matrix = self._compute_overlap_batch(pred_b_expanded, gt_valid_expanded)
                 # Result shape: [grid_h*grid_w*num_anchors, 1, num_valid] -> squeeze middle dim
                 # Only squeeze if dimension is 1, otherwise use reshape
                 iou_matrix = tf.reshape(iou_matrix, [tf.shape(pred_b)[0], tf.shape(gt_valid)[0]])  # [grid_h*grid_w*num_anchors, num_valid]
                 
-                # Get max IoU per prediction
+                # Get max overlap per prediction
                 return tf.reduce_max(iou_matrix, axis=-1)  # [grid_h*grid_w*num_anchors]
             
             def return_zeros():
@@ -659,7 +673,7 @@ class MultiGridLoss:
         
         # Use map_fn for batch processing (graph-mode compatible)
         iou_all = tf.map_fn(
-            compute_iou_for_batch,
+            compute_overlap_for_batch,
             tf.range(batch_size),
             fn_output_signature=tf.TensorSpec(shape=[None], dtype=tf.float32)
         )  # [batch, grid_h*grid_w*num_anchors]
@@ -681,7 +695,7 @@ class MultiGridLoss:
         tf.debugging.assert_equal(tf.shape(iou_all)[2], grid_w_int, message="Reshaped grid_w mismatch")
         tf.debugging.assert_equal(tf.shape(iou_all)[3], num_anchors, message="Reshaped num_anchors mismatch")
         
-        # Get max IoU across anchors for each cell: [batch, grid_h, grid_w]
+        # Get max overlap across anchors for each cell: [batch, grid_h, grid_w]
         max_iou_per_cell = tf.reduce_max(iou_all, axis=-1)
         
         # Debug: Assert max_iou shape
@@ -689,7 +703,7 @@ class MultiGridLoss:
         tf.debugging.assert_equal(tf.shape(max_iou_per_cell)[1], grid_h_int, message="max_iou grid_h mismatch")
         tf.debugging.assert_equal(tf.shape(max_iou_per_cell)[2], grid_w_int, message="max_iou grid_w mismatch")
         
-        # Create ignore mask: IoU > threshold AND not assigned as positive
+        # Create ignore mask: overlap > threshold AND not assigned as positive
         object_mask_squeezed = tf.squeeze(object_mask, axis=-1)  # [batch, grid_h, grid_w]
         tf.debugging.assert_equal(tf.shape(object_mask_squeezed), tf.shape(max_iou_per_cell),
                                  message="object_mask and max_iou shape mismatch")
@@ -700,12 +714,12 @@ class MultiGridLoss:
         )
         ignore_mask = tf.expand_dims(ignore_mask, axis=-1)  # [batch, grid_h, grid_w, 1]
 
-        # IoU of the assigned anchor (zeroed for empty cells)
+        # Overlap of the assigned anchor (zeroed for empty cells)
         assigned_anchor_iou = tf.reduce_sum(iou_all * true_anchor_one_hot, axis=-1, keepdims=True)
         assigned_anchor_iou = assigned_anchor_iou * object_mask
         assigned_anchor_iou = tf.stop_gradient(assigned_anchor_iou)
 
-        # Max IoU map for soft suppression
+        # Max overlap map for soft suppression
         max_iou_map = tf.expand_dims(max_iou_per_cell, axis=-1)
         max_iou_map = tf.stop_gradient(max_iou_map)
         
@@ -741,7 +755,8 @@ class MultiGridLoss:
     
     def _compute_mse_loss(self, true_xy: tf.Tensor, true_wh: tf.Tensor,
                           pred_xy: tf.Tensor, pred_wh: tf.Tensor,
-                          object_mask: tf.Tensor) -> tf.Tensor:
+                          object_mask: tf.Tensor,
+                          overlap_weight: Optional[tf.Tensor] = None) -> tf.Tensor:
         """
         Compute MSE loss for localization (YOLOv3 style).
         
@@ -749,12 +764,22 @@ class MultiGridLoss:
         
         Formula:
         pred_xy_activated = tanh(xy_activation_scale * pred_xy) + sigmoid(xy_activation_scale * pred_xy)
-        L_xy = Σ object_mask * (true_xy - pred_xy_activated)²
-        L_wh = Σ object_mask * (true_wh - pred_wh)²
+        L_xy = Σ object_mask * overlap_weight * (true_xy - pred_xy_activated)²
+        L_wh = Σ object_mask * overlap_weight * (true_wh - pred_wh)²
         L_location = L_xy + L_wh
         """
         # Apply tanh+sigmoid activation to pred_xy to match inference pipeline
         pred_xy_activated = self._activate_xy(pred_xy)
+
+        loc_weight = object_mask
+        if self.use_overlap_weighted_localization and overlap_weight is not None:
+            overlap_weight = tf.stop_gradient(tf.clip_by_value(overlap_weight, 0.0, 1.0))
+            overlap_weight = tf.pow(overlap_weight + self.eps, self.localization_overlap_power)
+            overlap_weight = (
+                self.localization_overlap_min +
+                (1.0 - self.localization_overlap_min) * overlap_weight
+            )
+            loc_weight = object_mask * overlap_weight
         
         # XY coordinate loss
         xy_diff = true_xy - pred_xy_activated
@@ -765,7 +790,7 @@ class MultiGridLoss:
         wh_loss = K.sum(K.square(wh_diff), axis=-1, keepdims=True)  # [batch, grid_h, grid_w, 1]
         
         # Combine and apply object mask
-        loc_loss = (xy_loss + wh_loss) * object_mask
+        loc_loss = (xy_loss + wh_loss) * loc_weight
         
         return K.sum(loc_loss)
     
